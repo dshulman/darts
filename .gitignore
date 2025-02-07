@@ -22,6 +22,12 @@ docs_env
 .DS_Store
 .gradle
 .venv
+datasets/scaled/
+datasets/scalers/
 
 # used by CI to build with latest versions of dependencies
 requirements-latest.txt
+examples/carrier_passengers.csv
+examples/m3_dataset.xls
+examples/m4_metadata.csv
+examples/m4_monthly.csv
