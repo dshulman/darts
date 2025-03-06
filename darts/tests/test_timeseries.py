@@ -9,7 +9,7 @@ import pytest
 import xarray as xr
 from scipy.stats import kurtosis, skew
 
-from darts import TimeSeries, concatenate
+from darts import TimeSeries, concatenate, slice_intersect
 from darts.utils.timeseries_generation import constant_timeseries, linear_timeseries
 from darts.utils.utils import expand_arr, freqs, generate_index
 
@@ -603,6 +603,11 @@ class TestTimeSeries:
             s_int_idx = series.slice_intersect_times(other, copy=False)
             assert s_int.time_index.equals(s_int_idx)
 
+            assert slice_intersect([series, other]) == [
+                series.slice_intersect(other),
+                other.slice_intersect(series),
+            ]
+
         # slice with exact range
         startA = start
         endA = end
@@ -611,11 +616,11 @@ class TestTimeSeries:
         check_intersect(seriesA, startA, endA, freq_expected)
 
         # entire slice within the range
-        startA = start + freq
-        endA = startA + 6 * freq_other
-        idxA = generate_index(startA, endA, freq=freq_other)
-        seriesA = TimeSeries.from_series(pd.Series(range(len(idxA)), index=idxA))
-        check_intersect(seriesA, startA, endA, freq_expected)
+        startB = start + freq
+        endB = startB + 6 * freq_other
+        idxB = generate_index(startB, endB, freq=freq_other)
+        seriesB = TimeSeries.from_series(pd.Series(range(len(idxB)), index=idxB))
+        check_intersect(seriesB, startB, endB, freq_expected)
 
         # start outside of range
         startC = start - 4 * freq
@@ -625,11 +630,11 @@ class TestTimeSeries:
         check_intersect(seriesC, start, endC, freq_expected)
 
         # end outside of range
-        startC = start + 4 * freq
-        endC = end + 4 * freq_other
-        idxC = generate_index(startC, endC, freq=freq_other)
-        seriesC = TimeSeries.from_series(pd.Series(range(len(idxC)), index=idxC))
-        check_intersect(seriesC, startC, end, freq_expected)
+        startD = start + 4 * freq
+        endD = end + 4 * freq_other
+        idxD = generate_index(startD, endD, freq=freq_other)
+        seriesD = TimeSeries.from_series(pd.Series(range(len(idxD)), index=idxD))
+        check_intersect(seriesD, startD, end, freq_expected)
 
         # small intersect
         startE = start + (n_steps - 1) * freq
@@ -639,12 +644,41 @@ class TestTimeSeries:
         check_intersect(seriesE, startE, end, freq_expected)
 
         # No intersect
-        startG = end + 3 * freq
-        endG = startG + 6 * freq_other
-        idxG = generate_index(startG, endG, freq=freq_other)
-        seriesG = TimeSeries.from_series(pd.Series(range(len(idxG)), index=idxG))
+        startF = end + 3 * freq
+        endF = startF + 6 * freq_other
+        idxF = generate_index(startF, endF, freq=freq_other)
+        seriesF = TimeSeries.from_series(pd.Series(range(len(idxF)), index=idxF))
         # for empty slices, we expect the original freq
-        check_intersect(seriesG, None, None, freq)
+        check_intersect(seriesF, None, None, freq)
+
+        # sequence with zero or one element
+        assert slice_intersect([]) == []
+        assert slice_intersect([series]) == [series]
+
+        # sequence with more than 2 elements
+        intersected_series = slice_intersect([series, seriesA, seriesE])
+        s1_int = intersected_series[0]
+        s2_int = intersected_series[1]
+        s3_int = intersected_series[2]
+
+        assert s1_int.time_index.equals(s2_int.time_index) and s1_int.time_index.equals(
+            s3_int.time_index
+        )
+        assert s1_int.start_time() == startE
+        assert s1_int.end_time() == endA
+
+        # check treatment different time index types
+        if series.has_datetime_index:
+            seriesF = TimeSeries.from_series(
+                pd.Series(range(len(idxF)), index=pd.to_numeric(idxF))
+            )
+        else:
+            seriesF = TimeSeries.from_series(
+                pd.Series(range(len(idxF)), index=pd.to_datetime(idxF))
+            )
+
+        with pytest.raises(IndexError):
+            slice_intersect([series, seriesF])
 
     @staticmethod
     def helper_test_shift(test_case, test_series: TimeSeries):
@@ -1405,23 +1439,205 @@ class TestTimeSeries:
             assert series_1 == series_no_nan
 
     def test_resample_timeseries(self):
+        # 01/01/2013 -> 10/01/2013, one value per day: 0 1 2 3 … 9
         times = pd.date_range("20130101", "20130110")
         pd_series = pd.Series(range(10), index=times)
         timeseries = TimeSeries.from_series(pd_series)
 
+        # up-sample with pad
+        # one value per hour -> same value for the whole day
         resampled_timeseries = timeseries.resample(freqs["h"])
         assert resampled_timeseries.freq_str == freqs["h"]
+        # day 1: -> 0
         assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101020000")] == 0
+        # day 2: -> 1
         assert resampled_timeseries.pd_series().at[pd.Timestamp("20130102020000")] == 1
+        # day 9: -> 8
         assert resampled_timeseries.pd_series().at[pd.Timestamp("20130109090000")] == 8
 
+        # down-sample with pad
+        # one value per 2 days -> entries for every other days do not exist, value of the first day is kept
         resampled_timeseries = timeseries.resample("2D")
         assert resampled_timeseries.freq_str == "2D"
+        # day 1: -> 0
         assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0
+        # day 2: -> does not exist
         with pytest.raises(KeyError):
             resampled_timeseries.pd_series().at[pd.Timestamp("20130102")]
-
+        # day 9: -> 8
         assert resampled_timeseries.pd_series().at[pd.Timestamp("20130109")] == 8
+
+        # down-sample with all
+        # one value per 2 days -> if all scalar in group are > 0 then 1 else 0
+        resampled_timeseries = timeseries.resample("2D", "all")
+        # group: [0,1] -> 0
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0
+        # group: [2,3] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 1
+
+        # down-sample with any
+        # one value per 2 days -> if any scalar in group is > 0 then 1 else 0
+        resampled_timeseries = timeseries.resample("2D", "any")
+        # group: [0,1] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 1
+        # group: [2,3] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 1
+
+        # up-sample with asfreq
+        # two values per day -> holes are filled with nan
+        resampled_timeseries = timeseries.resample("12h", "asfreq")
+        # day 1, 0h -> 0
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101000000")] == 0
+        # day 1, 12h -> nan
+        assert pd.isna(
+            resampled_timeseries.pd_series().at[pd.Timestamp("20130101120000")]
+        )
+
+        # up-sample with backfill
+        # two values per day -> holes are filled with next value
+        resampled_timeseries = timeseries.resample("12h", "backfill")
+        # hole in day 1 -> 1, from day 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101120000")] == 1
+        # day 2 -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130102000000")] == 1
+
+        # up-sample with bfill (same as backfill)
+        # two values per day -> holes are filled with next value
+        resampled_timeseries = timeseries.resample("12h", "bfill")
+        # hole in day 1 -> 1, from day 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101120000")] == 1
+        # day 2 -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130102000000")] == 1
+
+        # down-sample with count
+        # two values per day -> count number of values per group
+        resampled_timeseries = timeseries.resample("2D", "count")
+        # days 1,2 grouped -> 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 2
+        # days 3,4 grouped -> 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 2
+
+        # up-sample with ffill
+        # two values per day -> holes are filled with previous value
+        resampled_timeseries = timeseries.resample("12h", "ffill")
+        # day 1 -> 0
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101000000")] == 0
+        # hole in day 1 -> 0, from day 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101120000")] == 0
+
+        # down-sample with first
+        # one value per 2 days -> keep first value of the group
+        resampled_timeseries = timeseries.resample("2D", "first")
+        # days 1,2 grouped -> 0, from day 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0
+        # days 3,4 grouped -> 2, from day 3
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 2
+
+        # up-sample with interpolate
+        # two values per day -> holes are filled with linearly interpolated values
+        resampled_timeseries = timeseries.resample("12h", "interpolate")
+        # day 1, 0h -> 0
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101000000")] == 0
+        # between [0,1] -> 0.5
+        assert (
+            resampled_timeseries.pd_series().at[pd.Timestamp("20130101120000")] == 0.5
+        )
+
+        # down-sample with last
+        # one value per 2 days -> keep last value of the group
+        resampled_timeseries = timeseries.resample("2D", "last")
+        # days 1,2 grouped -> 1, from day 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 1
+        # days 3,4 grouped -> 3, from day 4
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 3
+
+        # down-sample with max
+        # one value per 2 days -> keep the max value of the group
+        resampled_timeseries = timeseries.resample("2D", "max")
+        # days 1,2 group: [0,1] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 1
+        # days 3,4 group: [2,3] -> 3
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 3
+
+        # down-sample with mean
+        # one value per 2 days -> keep the mean of the values of the group
+        resampled_timeseries = timeseries.resample("2D", "mean")
+        # days 1,2 group: [0,1] -> 0.5
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0.5
+        # days 3,4 group: [2,3] -> 2.5
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 2.5
+
+        # down-sample with median
+        # one value per 3 days -> keep the median of the values of the group
+        resampled_timeseries = timeseries.resample("3D", "median")
+        # days 1,2,3 group: [0,1,2] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 1
+        # days 4,5,6 group: [3,4,5] -> 4
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130104")] == 4
+
+        # down-sample with min
+        # one value per 2 days -> keep the min value of the group
+        resampled_timeseries = timeseries.resample("2D", "min")
+        # days 1,2 group: [0,1] -> 0
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0
+        # days 3,4 group: [2,3] -> 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 2
+
+        # up-sample with nearest (next is the nearest if equals)
+        # two values per day -> holes are filled with nearest value
+        resampled_timeseries = timeseries.resample("12h", "nearest")
+        # days 1.5 -> 1 from day 2
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101120000")] == 1
+        # days 2 -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130102000000")] == 1
+
+        # down-sample with quantile
+        # one value per 2 days -> keep the quantile of the values of the group
+        resampled_timeseries = timeseries.resample(
+            "2D", "quantile", method_kwargs={"q": 0.05}
+        )
+        # days 1,2 group: [0,1] -> 0.05
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0.05
+        # days 3,4 group: [2,3] -> 2.05
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 2.05
+
+        # down-sample with std
+        # one value per 2 days -> keep the std of the values of the group
+        resampled_timeseries = timeseries.resample("2D", "std")
+        # days 1,2 group: [0,1] -> 0.5
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0.5
+        # days 3,4 group: [2,3] -> 0.5
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 0.5
+
+        # down-sample with sum using reduce
+        # one value per 2 days -> keep the sum of the values of the group
+        resampled_timeseries = timeseries.resample(
+            "2D", "reduce", method_kwargs={"func": np.sum}
+        )
+        # days 1,2 group: [0,1] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 1
+        # days 3,4 group: [2,3] -> 5
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 5
+
+        # down-sample with sum
+        # one value per 2 days -> keep the sum of the values of the group
+        resampled_timeseries = timeseries.resample("2D", "sum")
+        # days 1,2 group: [0,1] -> 1
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 1
+        # days 3,4 group: [2,3] -> 5
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 5
+
+        # down-sample with var
+        # one value per 2 days -> keep the sum of the values of the group
+        resampled_timeseries = timeseries.resample("2D", "var")
+        # days 1,2 group: [0,1] -> 0.25
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130101")] == 0.25
+        # days 3,4 group: [2,4] -> 0.25
+        assert resampled_timeseries.pd_series().at[pd.Timestamp("20130103")] == 0.25
+
+        # unsupported method: apply
+        with pytest.raises(ValueError):
+            _ = timeseries.resample("2D", "apply")
 
         # using offset to avoid nan in the first value
         times = pd.date_range(
@@ -2290,7 +2506,16 @@ class TestTimeSeriesHeadTail:
 
 
 class TestTimeSeriesFromDataFrame:
-    def test_from_dataframe_sunny_day(self):
+    def pd_to_backend(self, df, backend, index=False):
+        if backend == "pandas":
+            return df
+        # elif backend == "polars":
+        #     if index:
+        #         return pl.from_pandas(df.reset_index())
+        #     return pl.from_pandas(df)
+
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_from_dataframe_sunny_day(self, backend):
         data_dict = {"Time": pd.date_range(start="20180501", end="20200301", freq="MS")}
         data_dict["Values1"] = np.random.uniform(
             low=-10, high=10, size=len(data_dict["Time"])
@@ -2304,40 +2529,55 @@ class TestTimeSeriesFromDataFrame:
         data_pd2["Time"] = data_pd2["Time"].apply(lambda date: str(date))
         data_pd3 = data_pd1.set_index("Time")
 
-        data_darts1 = TimeSeries.from_dataframe(df=data_pd1, time_col="Time")
-        data_darts2 = TimeSeries.from_dataframe(df=data_pd2, time_col="Time")
-        data_darts3 = TimeSeries.from_dataframe(df=data_pd3)
+        data_darts1 = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(data_pd1, backend), time_col="Time"
+        )
+        data_darts2 = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(data_pd2, backend), time_col="Time"
+        )
+        data_darts3 = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(data_pd3, backend, index=True),
+            time_col=None if backend == "pandas" else "Time",
+        )
 
         assert data_darts1 == data_darts2
         assert data_darts1 == data_darts3
 
-    def test_time_col_convert_string_integers(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_convert_string_integers(self, backend):
         expected = np.array(list(range(3, 10)))
         data_dict = {"Time": expected.astype(str)}
         data_dict["Values1"] = np.random.uniform(
             low=-10, high=10, size=len(data_dict["Time"])
         )
         df = pd.DataFrame(data_dict)
-        ts = TimeSeries.from_dataframe(df=df, time_col="Time")
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend), time_col="Time"
+        )
 
         assert set(ts.time_index.values.tolist()) == set(expected)
         assert ts.time_index.dtype == int
         assert ts.time_index.name == "Time"
 
-    def test_time_col_convert_integers(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_convert_integers(self, backend):
         expected = np.array(list(range(10)))
         data_dict = {"Time": expected}
         data_dict["Values1"] = np.random.uniform(
             low=-10, high=10, size=len(data_dict["Time"])
         )
+
         df = pd.DataFrame(data_dict)
-        ts = TimeSeries.from_dataframe(df=df, time_col="Time")
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend), time_col="Time"
+        )
 
         assert set(ts.time_index.values.tolist()) == set(expected)
         assert ts.time_index.dtype == int
         assert ts.time_index.name == "Time"
 
-    def test_fail_with_bad_integer_time_col(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_fail_with_bad_integer_time_col(self, backend):
         bad_time_col_vals = np.array([4, 0, 1, 2])
         data_dict = {"Time": bad_time_col_vals}
         data_dict["Values1"] = np.random.uniform(
@@ -2345,9 +2585,12 @@ class TestTimeSeriesFromDataFrame:
         )
         df = pd.DataFrame(data_dict)
         with pytest.raises(ValueError):
-            TimeSeries.from_dataframe(df=df, time_col="Time")
+            TimeSeries.from_dataframe(
+                df=self.pd_to_backend(df, backend), time_col="Time"
+            )
 
-    def test_time_col_convert_rangeindex(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_convert_rangeindex(self, backend):
         for expected_l, step in zip([[4, 0, 2, 3, 1], [8, 0, 4, 6, 2]], [1, 2]):
             expected = np.array(expected_l)
             data_dict = {"Time": expected}
@@ -2355,7 +2598,9 @@ class TestTimeSeriesFromDataFrame:
                 low=-10, high=10, size=len(data_dict["Time"])
             )
             df = pd.DataFrame(data_dict)
-            ts = TimeSeries.from_dataframe(df=df, time_col="Time")
+            ts = TimeSeries.from_dataframe(
+                df=self.pd_to_backend(df, backend), time_col="Time"
+            )
 
             # check type (should convert to RangeIndex):
             assert type(ts.time_index) is pd.RangeIndex
@@ -2370,31 +2615,38 @@ class TestTimeSeriesFromDataFrame:
             ]
             assert np.all(ar1 == ar2)
 
-    def test_time_col_convert_datetime(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_convert_datetime(self, backend):
         expected = pd.date_range(start="20180501", end="20200301", freq="MS")
         data_dict = {"Time": expected}
         data_dict["Values1"] = np.random.uniform(
             low=-10, high=10, size=len(data_dict["Time"])
         )
         df = pd.DataFrame(data_dict)
-        ts = TimeSeries.from_dataframe(df=df, time_col="Time")
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend), time_col="Time"
+        )
 
         assert ts.time_index.dtype == "datetime64[ns]"
         assert ts.time_index.name == "Time"
 
-    def test_time_col_convert_datetime_strings(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_convert_datetime_strings(self, backend):
         expected = pd.date_range(start="20180501", end="20200301", freq="MS")
         data_dict = {"Time": expected.values.astype(str)}
         data_dict["Values1"] = np.random.uniform(
             low=-10, high=10, size=len(data_dict["Time"])
         )
         df = pd.DataFrame(data_dict)
-        ts = TimeSeries.from_dataframe(df=df, time_col="Time")
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend), time_col="Time"
+        )
 
         assert ts.time_index.dtype == "datetime64[ns]"
         assert ts.time_index.name == "Time"
 
-    def test_time_col_with_tz(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_with_tz_df(self, backend):
         # numpy and xarray don't support "timezone aware" pd.DatetimeIndex
         # the BUGFIX removes timezone information without conversion
 
@@ -2405,13 +2657,10 @@ class TestTimeSeriesFromDataFrame:
         # pd.DataFrame loses the tz information unless it is contained in its index
         # (other columns are silently converted to UTC, with tz attribute set to None)
         df = pd.DataFrame(data=values, index=time_range_MS)
-        ts = TimeSeries.from_dataframe(df=df)
-        assert list(ts.time_index) == list(time_range_MS.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_MS)
-        assert ts.time_index.tz is None
-
-        serie = pd.Series(data=values, index=time_range_MS)
-        ts = TimeSeries.from_series(pd_series=serie)
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend, index=True),
+            time_col=None if backend == "pandas" else "index",
+        )
         assert list(ts.time_index) == list(time_range_MS.tz_localize(None))
         assert list(ts.time_index.tz_localize("CET")) == list(time_range_MS)
         assert ts.time_index.tz is None
@@ -2427,13 +2676,10 @@ class TestTimeSeriesFromDataFrame:
         values = np.random.uniform(low=-10, high=10, size=len(time_range_H))
 
         df = pd.DataFrame(data=values, index=time_range_H)
-        ts = TimeSeries.from_dataframe(df=df)
-        assert list(ts.time_index) == list(time_range_H.tz_localize(None))
-        assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
-        assert ts.time_index.tz is None
-
-        series = pd.Series(data=values, index=time_range_H)
-        ts = TimeSeries.from_series(pd_series=series)
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend, index=True),
+            time_col=None if backend == "pandas" else "index",
+        )
         assert list(ts.time_index) == list(time_range_H.tz_localize(None))
         assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
         assert ts.time_index.tz is None
@@ -2443,7 +2689,29 @@ class TestTimeSeriesFromDataFrame:
         assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
         assert ts.time_index.tz is None
 
-    def test_time_col_convert_garbage(self):
+    def test_time_col_with_tz_series(self):
+        time_range_MS = pd.date_range(
+            start="20180501", end="20200301", freq="MS", tz="CET"
+        )
+        values = np.random.uniform(low=-10, high=10, size=len(time_range_MS))
+        serie = pd.Series(data=values, index=time_range_MS)
+        ts = TimeSeries.from_series(pd_series=serie)
+        assert list(ts.time_index) == list(time_range_MS.tz_localize(None))
+        assert list(ts.time_index.tz_localize("CET")) == list(time_range_MS)
+        assert ts.time_index.tz is None
+
+        time_range_H = pd.date_range(
+            start="20200518", end="20200521", freq=freqs["h"], tz="CET"
+        )
+        values = np.random.uniform(low=-10, high=10, size=len(time_range_H))
+        series = pd.Series(data=values, index=time_range_H)
+        ts = TimeSeries.from_series(pd_series=series)
+        assert list(ts.time_index) == list(time_range_H.tz_localize(None))
+        assert list(ts.time_index.tz_localize("CET")) == list(time_range_H)
+        assert ts.time_index.tz is None
+
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_time_col_convert_garbage(self, backend):
         expected = [
             "2312312asdfdw",
             "asdfsdf432sdf",
@@ -2458,9 +2726,12 @@ class TestTimeSeriesFromDataFrame:
         df = pd.DataFrame(data_dict)
 
         with pytest.raises(AttributeError):
-            TimeSeries.from_dataframe(df=df, time_col="Time")
+            TimeSeries.from_dataframe(
+                df=self.pd_to_backend(df, backend), time_col="Time"
+            )
 
-    def test_df_named_columns_index(self):
+    @pytest.mark.parametrize("backend", ["pandas"])
+    def test_df_named_columns_index(self, backend):
         time_index = generate_index(
             start=pd.Timestamp("2000-01-01"), length=4, freq="D", name="index"
         )
@@ -2470,7 +2741,10 @@ class TestTimeSeriesFromDataFrame:
             columns=["y"],
         )
         df.columns.name = "id"
-        ts = TimeSeries.from_dataframe(df)
+        ts = TimeSeries.from_dataframe(
+            df=self.pd_to_backend(df, backend, index=True),
+            time_col=None if backend == "pandas" else "index",
+        )
 
         exp_ts = TimeSeries.from_times_and_values(
             times=time_index,
