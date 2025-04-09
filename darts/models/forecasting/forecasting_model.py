@@ -27,6 +27,13 @@ from itertools import product
 from random import sample
 from typing import Any, BinaryIO, Callable, Literal, Optional, Union
 
+from darts.utils.likelihood_models.base import (
+    Likelihood,
+    likelihood_component_names,
+    quantile_interval_names,
+    quantile_names,
+)
+
 if sys.version_info >= (3, 11):
     from typing import Self
 else:
@@ -68,9 +75,6 @@ from darts.utils.ts_utils import (
 )
 from darts.utils.utils import (
     generate_index,
-    likelihood_component_names,
-    quantile_interval_names,
-    quantile_names,
 )
 
 logger = get_logger(__name__)
@@ -207,6 +211,11 @@ class ForecastingModel(ABC, metaclass=ModelMeta):
         return True
 
     @property
+    def likelihood(self) -> Optional[Likelihood]:
+        """Returns the likelihood (if any) that the model uses for probabilistic forecasts."""
+        return None
+
+    @property
     def supports_probabilistic_prediction(self) -> bool:
         """
         Checks if the forecasting model with this configuration supports probabilistic predictions.
@@ -267,7 +276,7 @@ class ForecastingModel(ABC, metaclass=ModelMeta):
         """
         Whether model instance supports direct prediction of likelihood parameters
         """
-        return getattr(self, "likelihood", None) is not None
+        return self.likelihood is not None
 
     @property
     @abstractmethod
@@ -593,12 +602,12 @@ class ForecastingModel(ABC, metaclass=ModelMeta):
             input_series if input_series is not None else self.training_series
         )
         return _build_forecast_series(
-            points_preds,
-            input_series,
-            custom_components,
-            with_static_covs,
-            with_hierarchy,
-            pred_start,
+            points_preds=points_preds,
+            input_series=input_series,
+            custom_columns=custom_components,
+            with_static_covs=with_static_covs,
+            with_hierarchy=with_hierarchy,
+            pred_start=pred_start,
         )
 
     def _historical_forecasts_sanity_checks(self, *args: Any, **kwargs: Any) -> None:
@@ -1266,6 +1275,7 @@ class ForecastingModel(ABC, metaclass=ModelMeta):
                             if not predict_likelihood_parameters
                             else None
                         ),
+                        metadata=series_.metadata,
                     )
                 )
             else:

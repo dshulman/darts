@@ -141,7 +141,7 @@ class _NLinearModule(PLMixedCovariatesModule):
         else:
             if self.normalize:
                 # get last values only for target features
-                seq_last = x[:, -1:, : self.output_dim].detach()
+                seq_last = x[:, -1:, : self.output_dim].detach().clone()
                 # normalize the target features only (ignore the covariates)
                 x[:, :, : self.output_dim] = x[:, :, : self.output_dim] - seq_last
 
@@ -248,7 +248,7 @@ class NLinearModel(MixedCovariatesTorchModel):
             This parameter will be ignored for probabilistic models if the ``likelihood`` parameter is specified.
             Default: ``torch.nn.MSELoss()``.
         likelihood
-            One of Darts' :meth:`Likelihood <darts.utils.likelihood_models.Likelihood>` models to be used for
+            One of Darts' :meth:`Likelihood <darts.utils.likelihood_models.torch.TorchLikelihood>` models to be used for
             probabilistic forecasts. Default: ``None``.
         torch_metrics
             A torch metric or a ``MetricCollection`` used for evaluation. A full list of available metrics can be found

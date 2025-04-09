@@ -9,7 +9,10 @@ import sklearn.metrics
 
 from darts import TimeSeries, concatenate
 from darts.metrics import metrics
-from darts.utils.utils import likelihood_component_names, quantile_names
+from darts.utils.likelihood_models.base import (
+    likelihood_component_names,
+    quantile_names,
+)
 
 
 def sklearn_mape(*args, **kwargs):
@@ -199,8 +202,8 @@ class TestMetrics:
     def test_ope_zero(self):
         with pytest.raises(ValueError):
             metrics.ope(
-                self.series1 - self.series1.pd_series().mean(),
-                self.series1 - self.series1.pd_series().mean(),
+                self.series1 - self.series1.to_series().mean(),
+                self.series1 - self.series1.to_series().mean(),
             )
 
     @pytest.mark.parametrize(

@@ -51,7 +51,7 @@ def _optimized_historical_forecasts_last_points_only(
         )
         freq = series_.freq
         forecast_components = (
-            model._likelihood_components_names(series_)
+            model.likelihood.component_names(series_)
             if predict_likelihood_parameters
             else series_.columns
         )
@@ -136,7 +136,7 @@ def _optimized_historical_forecasts_last_points_only(
         X = X[0][::stride, :, 0]
 
         # repeat rows for probabilistic forecast
-        forecast = model._predict_and_sample(
+        forecast = model._predict(
             x=np.repeat(X, num_samples, axis=0),
             num_samples=num_samples,
             predict_likelihood_parameters=predict_likelihood_parameters,
@@ -184,6 +184,7 @@ def _optimized_historical_forecasts_last_points_only(
                 columns=forecast_components,
                 static_covariates=series_.static_covariates,
                 hierarchy=series_.hierarchy,
+                metadata=series_.metadata,
             )
         )
     return forecasts_list
@@ -221,7 +222,7 @@ def _optimized_historical_forecasts_all_points(
         )
         freq = series_.freq
         forecast_components = (
-            model._likelihood_components_names(series_)
+            model.likelihood.component_names(series_)
             if predict_likelihood_parameters
             else series_.columns
         )
@@ -305,7 +306,7 @@ def _optimized_historical_forecasts_all_points(
         X = X[0][:, :, 0]
 
         # repeat rows for probabilistic forecast
-        forecast = model._predict_and_sample(
+        forecast = model._predict(
             x=np.repeat(X, num_samples, axis=0),
             num_samples=num_samples,
             predict_likelihood_parameters=predict_likelihood_parameters,
@@ -367,6 +368,7 @@ def _optimized_historical_forecasts_all_points(
                     columns=forecast_components,
                     static_covariates=series_.static_covariates,
                     hierarchy=series_.hierarchy,
+                    metadata=series_.metadata,
                 )
             )
 

@@ -19,6 +19,11 @@ from darts.models import (
     TBATS,
     VARIMA,
     AutoARIMA,
+    AutoCES,
+    AutoETS,
+    AutoMFLES,
+    AutoTBATS,
+    AutoTheta,
     Croston,
     ExponentialSmoothing,
     FourTheta,
@@ -28,15 +33,9 @@ from darts.models import (
     NaiveMean,
     NaiveMovingAverage,
     NaiveSeasonal,
-    NotImportedModule,
     Prophet,
     RandomForest,
     RegressionModel,
-    StatsForecastAutoARIMA,
-    StatsForecastAutoCES,
-    StatsForecastAutoETS,
-    StatsForecastAutoTBATS,
-    StatsForecastAutoTheta,
     Theta,
 )
 from darts.models.forecasting.forecasting_model import (
@@ -45,7 +44,13 @@ from darts.models.forecasting.forecasting_model import (
 )
 from darts.timeseries import TimeSeries
 from darts.utils import timeseries_generation as tg
-from darts.utils.utils import ModelMode, SeasonalityMode, TrendMode, generate_index
+from darts.utils.utils import (
+    ModelMode,
+    NotImportedModule,
+    SeasonalityMode,
+    TrendMode,
+    generate_index,
+)
 
 logger = get_logger(__name__)
 
@@ -54,11 +59,12 @@ models = [
     (ExponentialSmoothing(), 5.4),
     (ARIMA(12, 2, 1), 5.2),
     (ARIMA(1, 1, 1), 24),
-    (StatsForecastAutoARIMA(season_length=12), 4.6),
-    (StatsForecastAutoTheta(season_length=12), 5.5),
-    (StatsForecastAutoCES(season_length=12, model="Z"), 7.3),
-    (StatsForecastAutoETS(season_length=12, model="AAZ"), 7.3),
-    (StatsForecastAutoTBATS(season_length=12), 10),
+    (AutoARIMA(season_length=12), 4.6),
+    (AutoTheta(season_length=12), 5.5),
+    (AutoCES(season_length=12, model="Z"), 7.3),
+    (AutoETS(season_length=12, model="AAZ"), 7.3),
+    (AutoMFLES(season_length=12, test_size=12), 9.8),
+    (AutoTBATS(season_length=12), 10),
     (Croston(version="classic"), 23),
     (Croston(version="tsb", alpha_d=0.1, alpha_p=0.1), 23),
     (Theta(), 11),
@@ -73,7 +79,6 @@ models = [
     (KalmanForecaster(dim_x=3), 20),
     (LinearRegressionModel(lags=12), 13),
     (RandomForest(lags=12, n_estimators=5, max_depth=3), 14),
-    (AutoARIMA(), 12),
     (TBATS(use_trend=True, use_arma_errors=True, use_box_cox=True), 8.5),
     (BATS(use_trend=True, use_arma_errors=True, use_box_cox=True), 11),
 ]
@@ -91,16 +96,15 @@ multivariate_models = [
 
 dual_models = [
     ARIMA(),
-    StatsForecastAutoARIMA(season_length=12),
-    StatsForecastAutoETS(season_length=12),
-    AutoARIMA(),
+    AutoARIMA(season_length=12),
+    AutoMFLES(season_length=12, test_size=12),
+    AutoETS(season_length=12),
 ]
 
 # test only a few models for encoder support reduce time
 encoder_support_models = [
     VARIMA(1, 0, 0),
     ARIMA(),
-    AutoARIMA(),
     KalmanForecaster(dim_x=30),
 ]
 if not isinstance(Prophet, NotImportedModule):
@@ -351,10 +355,6 @@ class TestLocalForecastingModels:
         varima = VARIMA(trend="t")
         with pytest.raises(ValueError):
             varima.fit(series=ts)
-
-        autoarima = AutoARIMA(trend="t")
-        with pytest.raises(ValueError):
-            autoarima.fit(series=ts)
 
     def test_forecast_time_index(self):
         # the forecast time index should follow that of the train series

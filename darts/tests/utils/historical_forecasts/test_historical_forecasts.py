@@ -28,7 +28,6 @@ from darts.models import (
     LinearRegressionModel,
     NaiveDrift,
     NaiveSeasonal,
-    NotImportedModule,
 )
 from darts.models.forecasting.forecasting_model import (
     LocalForecastingModel,
@@ -36,8 +35,12 @@ from darts.models.forecasting.forecasting_model import (
 from darts.tests.conftest import TORCH_AVAILABLE, tfm_kwargs
 from darts.utils import n_steps_between
 from darts.utils import timeseries_generation as tg
+from darts.utils.likelihood_models.base import (
+    likelihood_component_names,
+    quantile_names,
+)
 from darts.utils.ts_utils import SeriesType, get_series_seq_type
-from darts.utils.utils import likelihood_component_names, quantile_names
+from darts.utils.utils import NotImportedModule
 
 if TORCH_AVAILABLE:
     import torch
@@ -56,7 +59,10 @@ if TORCH_AVAILABLE:
         TransformerModel,
         TSMixerModel,
     )
-    from darts.utils.likelihood_models import GaussianLikelihood, QuantileRegression
+    from darts.utils.likelihood_models.torch import (
+        GaussianLikelihood,
+        QuantileRegression,
+    )
 
 models = [LinearRegressionModel, NaiveDrift]
 models_reg_no_cov_cls_kwargs = [
@@ -72,6 +78,8 @@ models_reg_no_cov_cls_kwargs = [
         {},
         (5, 3),
     ),
+    (LinearRegressionModel, {"lags": [-5]}, {}, (5, 1)),
+    (LinearRegressionModel, {"lags": [-5], "output_chunk_shift": 1}, {}, (5, 2)),
 ]
 if not isinstance(CatBoostModel, NotImportedModule):
     models_reg_no_cov_cls_kwargs.append((
@@ -665,7 +673,7 @@ class TestHistoricalforecast:
     def test_historical_forecasts(self, config):
         """Tests historical forecasts with retraining for expected forecast lengths and times"""
         forecast_horizon = 8
-        # if no fit and retrain=false, should fit at fist iteration
+        # if no fit and retrain=false, should fit at first iteration
         model_cls, kwargs, model_kwarg, bounds = config
         model = model_cls(**kwargs, **model_kwarg)
         # set train length to be the minimum required training length
@@ -1248,11 +1256,12 @@ class TestHistoricalforecast:
             [ts_univariate, ts_multivariate],
             models_reg_no_cov_cls_kwargs + models_reg_cov_cls_kwargs,
             [True, False],
+            [True, False],
             [1, 5],
         ),
     )
     def test_optimized_historical_forecasts_regression(self, config):
-        ts, model_config, multi_models, forecast_horizon = config
+        ts, model_config, multi_models, overlap_end, forecast_horizon = config
         # slightly longer to not affect the last predictable timestamp
         ts_covs = self.ts_covs
         start = 14
@@ -1301,6 +1310,7 @@ class TestHistoricalforecast:
                         last_points_only=last_points_only,
                         stride=stride,
                         forecast_horizon=forecast_horizon,
+                        overlap_end=overlap_end,
                         enable_optimization=False,
                     )
 
@@ -1317,6 +1327,7 @@ class TestHistoricalforecast:
                         last_points_only=last_points_only,
                         stride=stride,
                         forecast_horizon=forecast_horizon,
+                        overlap_end=overlap_end,
                     )
 
                     self.helper_compare_hf(hist_fct, opti_hist_fct)

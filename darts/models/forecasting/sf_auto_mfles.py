@@ -1,47 +1,39 @@
 """
-AutoARIMA
----------
+AutoMFLES
+-----------
 """
 
 from typing import Optional
 
-from pmdarima import AutoARIMA as PmdAutoARIMA
+from statsforecast.models import AutoMFLES as SFAutoMFLES
 
-from darts.logging import get_logger, raise_if
+from darts import TimeSeries
+from darts.logging import get_logger
 from darts.models.forecasting.forecasting_model import (
     FutureCovariatesLocalForecastingModel,
 )
-from darts.timeseries import TimeSeries
 
 logger = get_logger(__name__)
 
 
-class AutoARIMA(FutureCovariatesLocalForecastingModel):
+class AutoMFLES(FutureCovariatesLocalForecastingModel):
     def __init__(
-        self, *autoarima_args, add_encoders: Optional[dict] = None, **autoarima_kwargs
+        self, *autoMFLES_args, add_encoders: Optional[dict] = None, **autoMFLES_kwargs
     ):
-        """Auto-ARIMA
+        """Auto-MFLES based on `Statsforecasts package
+        <https://github.com/Nixtla/statsforecast>`_.
 
-        This implementation is a thin wrapper around `pmdarima AutoARIMA model
-        <https://alkaline-ml.com/pmdarima/modules/generated/pmdarima.arima.AutoARIMA.html>`_,
-        which provides functionality similar to R's `auto.arima
-        <https://www.rdocumentation.org/packages/forecast/versions/7.3/topics/auto.arima>`_.
+        Automatically selects the best MFLES model from all feasible combinations of the parameters
+        `seasonality_weights`, `smoother`, `ma`, and `seasonal_period`. Selection is made using the sMAPE by default.
 
-        This model supports the same parameters as the pmdarima AutoARIMA model.
-        See `pmdarima documentation
-        <https://alkaline-ml.com/pmdarima/modules/generated/pmdarima.arima.AutoARIMA.html>`_
-        for an extensive documentation and a list of supported parameters.
-
-        .. note::
-            For a faster and probabilistic version of AutoARIMA, checkout
-            the :class:`StatsForecastAutoARIMA` model.
+        We refer to the `statsforecast AutoMFLES documentation
+        <https://nixtlaverse.nixtla.io/statsforecast/src/core/models.html#mfles>`_
+        for the exhaustive documentation of the arguments.
 
         Parameters
         ----------
-        autoarima_args
-            Positional arguments for the pmdarima.AutoARIMA model
-        autoarima_kwargs
-            Keyword arguments for the pmdarima.AutoARIMA model
+        autoMFLES_args
+            Positional arguments for ``statsforecasts.models.AutoMFLES``.
         add_encoders
             A large number of future covariates can be automatically generated with `add_encoders`.
             This can be done by adding multiple pre-defined index encoders and/or custom user-made functions that
@@ -66,41 +58,45 @@ class AutoARIMA(FutureCovariatesLocalForecastingModel):
                     'tz': 'CET'
                 }
             ..
+        autoMFLES_kwargs
+            Keyword arguments for ``statsforecasts.models.AutoMFLES``.
 
         Examples
         --------
         >>> from darts.datasets import AirPassengersDataset
-        >>> from darts.models import AutoARIMA
-        >>> from darts.utils.timeseries_generation import holidays_timeseries
+        >>> from darts.models import AutoMFLES
+        >>> from darts.utils.timeseries_generation import datetime_attribute_timeseries
         >>> series = AirPassengersDataset().load()
         >>> # optionally, use some future covariates; e.g. the value of the month encoded as a sine and cosine series
         >>> future_cov = datetime_attribute_timeseries(series, "month", cyclic=True, add_length=6)
-        >>> # define some boundaries for the parameters
-        >>> model = AutoARIMA(start_p=8, max_p=12, start_q=1)
+        >>> # define AutoMFLES parameters
+        >>> model = AutoMFLES(season_length=12, test_size=12)
         >>> model.fit(series, future_covariates=future_cov)
         >>> pred = model.predict(6, future_covariates=future_cov)
         >>> pred.values()
-        array([[449.79716178],
-               [416.31180633],
-               [445.28005229],
-               [485.27121314],
-               [507.61787454],
-               [561.26993332]])
+        array([[466.03298745],
+               [450.76192105],
+               [517.6342497 ],
+               [511.62988828],
+               [520.15305998],
+               [593.38690019]])
         """
-        super().__init__(add_encoders=add_encoders)
-        self.model = PmdAutoARIMA(*autoarima_args, **autoarima_kwargs)
-        self.trend = self.model.trend
+        if "prediction_intervals" in autoMFLES_kwargs:
+            logger.warning(
+                "AutoMFLES does not support probabilistic forecasting. "
+                "`prediction_intervals` will be ignored."
+            )
 
-    @property
-    def supports_multivariate(self) -> bool:
-        return False
+        super().__init__(add_encoders=add_encoders)
+        self.model = SFAutoMFLES(*autoMFLES_args, **autoMFLES_kwargs)
 
     def _fit(self, series: TimeSeries, future_covariates: Optional[TimeSeries] = None):
         super()._fit(series, future_covariates)
         self._assert_univariate(series)
         series = self.training_series
         self.model.fit(
-            series.values(), X=future_covariates.values() if future_covariates else None
+            series.values(copy=False).flatten(),
+            X=future_covariates.values(copy=False) if future_covariates else None,
         )
         return self
 
@@ -112,10 +108,17 @@ class AutoARIMA(FutureCovariatesLocalForecastingModel):
         verbose: bool = False,
     ):
         super()._predict(n, future_covariates, num_samples)
-        forecast = self.model.predict(
-            n_periods=n, X=future_covariates.values() if future_covariates else None
+        forecast_dict = self.model.predict(
+            h=n,
+            X=future_covariates.values(copy=False) if future_covariates else None,
+            level=None,
         )
-        return self._build_forecast_series(forecast)
+
+        return self._build_forecast_series(forecast_dict["mean"])
+
+    @property
+    def supports_multivariate(self) -> bool:
+        return False
 
     @property
     def min_train_series_length(self) -> int:
@@ -123,9 +126,8 @@ class AutoARIMA(FutureCovariatesLocalForecastingModel):
 
     @property
     def _supports_range_index(self) -> bool:
-        raise_if(
-            self.trend and self.trend != "c",
-            "'trend' is not None. Range indexing is not supported in that case.",
-            logger,
-        )
         return True
+
+    @property
+    def supports_probabilistic_prediction(self) -> bool:
+        return False

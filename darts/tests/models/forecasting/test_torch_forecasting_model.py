@@ -13,7 +13,7 @@ from darts import TimeSeries
 from darts.dataprocessing.encoders import SequentialEncoder
 from darts.dataprocessing.transformers import BoxCox, Scaler
 from darts.metrics import mape
-from darts.tests.conftest import TORCH_AVAILABLE, tfm_kwargs
+from darts.tests.conftest import TORCH_AVAILABLE, tfm_kwargs, tfm_kwargs_dev
 
 if not TORCH_AVAILABLE:
     pytest.skip(
@@ -50,12 +50,12 @@ from darts.models import (
 )
 from darts.models.components.layer_norm_variants import RINorm
 from darts.models.forecasting.global_baseline_models import _GlobalNaiveModel
-from darts.utils.likelihood_models import (
+from darts.utils.likelihood_models.torch import (
     CauchyLikelihood,
     GaussianLikelihood,
     LaplaceLikelihood,
-    Likelihood,
     QuantileRegression,
+    TorchLikelihood,
 )
 
 kwargs = {
@@ -429,6 +429,63 @@ class TestTorchForecastingModel:
             model_new = create_model(**kwargs_)
             model_new.load_weights(model_path_manual)
 
+    @pytest.mark.parametrize(
+        "params",
+        itertools.product(
+            [DLinearModel, NBEATSModel, RNNModel],  # model_cls
+            [True, False],  # past_covs
+            [True, False],  # future_covs
+            [True, False],  # static covs
+        ),
+    )
+    def test_save_and_load_weights_covs_usage_attributes(self, tmpdir_fn, params):
+        """
+        Verify that save/load correctly preserve the use_[past/future/static]_covariates attribute.
+        """
+        model_cls, use_pc, use_fc, use_sc = params
+        model = model_cls(
+            input_chunk_length=4,
+            output_chunk_length=1,
+            n_epochs=1,
+            **tfm_kwargs_dev,
+        )
+        # skip test if the combination of covariates is not supported by the model
+        if (
+            (use_pc and not model.supports_past_covariates)
+            or (use_fc and not model.supports_future_covariates)
+            or (use_sc and not model.supports_static_covariates)
+        ):
+            return
+
+        model.fit(
+            series=self.series
+            if not use_sc
+            else self.series.with_static_covariates(pd.Series([12], ["loc"])),
+            past_covariates=self.series + 10 if use_pc else None,
+            future_covariates=self.series - 5 if use_fc else None,
+        )
+        # save and load the model
+        filename_ckpt = f"{model.model_name}.pt"
+        model.save(filename_ckpt)
+        model_loaded = model_cls(
+            input_chunk_length=4,
+            output_chunk_length=1,
+            **tfm_kwargs_dev,
+        )
+        model_loaded.load_weights(filename_ckpt)
+
+        assert model.uses_past_covariates == model_loaded.uses_past_covariates == use_pc
+        assert (
+            model.uses_future_covariates
+            == model_loaded.uses_future_covariates
+            == use_fc
+        )
+        assert (
+            model.uses_static_covariates
+            == model_loaded.uses_static_covariates
+            == use_sc
+        )
+
     def test_save_and_load_weights_w_encoders(self, tmpdir_fn):
         """
         Verify that save/load does not break encoders.
@@ -765,6 +822,7 @@ class TestTorchForecastingModel:
         )
         # check that weights from checkpoint give identical predictions as weights from manual save
         assert preds_manual_from_weights == preds_auto_from_weights
+
         # model with explicitly no likelihood
         model_no_likelihood = self.helper_create_DLinearModel(
             work_dir=tmpdir_fn, model_name="no_likelihood", likelihood=None
@@ -807,6 +865,21 @@ class TestTorchForecastingModel:
             "missing"
         )
 
+        # model with the same likelihood but different parameters (output remains the same so does not matter)
+        model_same_likelihood_other_prior = self.helper_create_DLinearModel(
+            work_dir=tmpdir_fn,
+            model_name="same_likelihood_other_prior",
+            likelihood=GaussianLikelihood(),
+        )
+        with pytest.raises(ValueError) as error_msg:
+            model_same_likelihood_other_prior.load_weights_from_checkpoint(
+                auto_name, work_dir=tmpdir_fn, best=False, map_location="cpu"
+            )
+        assert str(error_msg.value).startswith(
+            "The values of the hyper-parameters in the model and loaded checkpoint should be identical.\n"
+            "incorrect"
+        )
+
         # model with a different likelihood
         model_other_likelihood = self.helper_create_DLinearModel(
             work_dir=tmpdir_fn,
@@ -815,21 +888,6 @@ class TestTorchForecastingModel:
         )
         with pytest.raises(ValueError) as error_msg:
             model_other_likelihood.load_weights(model_path_manual, map_location="cpu")
-        assert str(error_msg.value).startswith(
-            "The values of the hyper-parameters in the model and loaded checkpoint should be identical.\n"
-            "incorrect"
-        )
-
-        # model with the same likelihood but different parameters
-        model_same_likelihood_other_prior = self.helper_create_DLinearModel(
-            work_dir=tmpdir_fn,
-            model_name="same_likelihood_other_prior",
-            likelihood=GaussianLikelihood(),
-        )
-        with pytest.raises(ValueError) as error_msg:
-            model_same_likelihood_other_prior.load_weights(
-                model_path_manual, map_location="cpu"
-            )
         assert str(error_msg.value).startswith(
             "The values of the hyper-parameters in the model and loaded checkpoint should be identical.\n"
             "incorrect"
@@ -2244,7 +2302,7 @@ class TestTorchForecastingModel:
         model_name: str = "unitest_model",
         add_encoders: Optional[dict] = None,
         save_checkpoints: bool = False,
-        likelihood: Optional[Likelihood] = None,
+        likelihood: Optional[TorchLikelihood] = None,
         output_chunk_length: int = 1,
         **kwargs,
     ):
